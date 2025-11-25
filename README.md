@@ -35,6 +35,40 @@ The script also prints the overall accuracy of the model using a random train
 /test split. It then estimates the winner of the next scheduled race using the
 current driver and team standings.
 
+## Playwright Automation Suite
+
+The `playwright/` workspace showcases the end-to-end and scraping tests I built
+to validate selectors, page objects and asynchronous user flows without needing
+access to the live timing service.
+
+### Run the tests
+
+```bash
+cd playwright
+npm install
+npx playwright install --with-deps  # first run only
+npm test
+```
+
+What the suite covers:
+
+- parsing the mock live-timing table and asserting the structured results can
+  feed downstream ML features
+- exercising filter controls and empty states to catch edge cases in selectors
+- awaiting async refresh flows (spinner, disabled buttons, fresh data rows)
+
+### Capture results via Playwright
+
+The same page object powers a small scraper that persists structured race
+results for experimentation with the Python model:
+
+```bash
+cd playwright
+npm run scrape
+```
+
+JSON output is written to `playwright/artifacts/mock-results.json`.
+
 ## Data Source
 
 Race and timing data is retrieved via `fastf1`, which accesses the official F1

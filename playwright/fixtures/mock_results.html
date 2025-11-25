@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Mock F1 Race Results</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background-color: #0f111a;
+      color: #f5f7ff;
+    }
+
+    body {
+      margin: 0;
+      padding: 2rem;
+    }
+
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      background: #141724;
+      border-radius: 18px;
+      padding: 2rem;
+      box-shadow: 0 25px 80px rgba(10, 12, 26, 0.35);
+    }
+
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 0.4rem;
+    }
+
+    .subhead {
+      margin-top: 0;
+      color: #a1a6c8;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: flex-end;
+      margin-bottom: 1rem;
+    }
+
+    label {
+      font-size: 0.9rem;
+      color: #a1a6c8;
+    }
+
+    input {
+      width: 240px;
+      padding: 0.6rem;
+      border-radius: 10px;
+      border: 1px solid #2e3350;
+      background: #0d101c;
+      color: inherit;
+      margin-top: 0.3rem;
+    }
+
+    button {
+      border: none;
+      border-radius: 999px;
+      padding: 0.6rem 1.4rem;
+      font-weight: 600;
+      background: linear-gradient(120deg, #ff6b6b, #845ef7);
+      color: #fff;
+      cursor: pointer;
+      transition: opacity 150ms ease;
+    }
+
+    button.secondary {
+      background: transparent;
+      border: 1px solid #2e3350;
+    }
+
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.75rem;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 0.65rem;
+    }
+
+    thead {
+      background: #171a2b;
+      text-transform: uppercase;
+      font-size: 0.7rem;
+      letter-spacing: 0.08rem;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid #1f2336;
+      transition: background 150ms ease;
+    }
+
+    tbody tr:hover {
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .chip {
+      border-radius: 999px;
+      padding: 0.2rem 0.75rem;
+      font-weight: 600;
+      font-size: 0.8rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .empty {
+      margin-top: 1rem;
+      padding: 1rem;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px dashed #2e3350;
+      color: #a1a6c8;
+    }
+
+    .status {
+      margin: 0.5rem 0 0;
+      font-size: 0.9rem;
+      color: #8be9fd;
+    }
+
+    .is-hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">Automation Playground</p>
+      <h1 data-testid="page-title">2024 Live Timing Snapshot</h1>
+      <p class="subhead">Used to validate selectors, page objects, and assertions for the Playwright test suite.</p>
+    </header>
+
+    <section class="controls">
+      <label>
+        Filter by driver or abbreviation
+        <input id="driver-filter" data-testid="driver-filter" placeholder="Try 'VER' or 'Ferrari'" autocomplete="off" />
+      </label>
+      <button class="secondary" data-testid="clear-filter" type="button">Clear filter</button>
+      <button data-testid="refresh-button" type="button">Refresh classification</button>
+    </section>
+
+    <p class="status" data-testid="status-banner" data-state="idle">Standing data ready</p>
+
+    <table data-testid="results-table">
+      <thead>
+        <tr>
+          <th>Round</th>
+          <th>Grand Prix</th>
+          <th>Driver</th>
+          <th>Team</th>
+          <th>Grid</th>
+          <th>Finish</th>
+          <th>Points</th>
+        </tr>
+      </thead>
+      <tbody data-testid="results-body">
+        <tr data-testid="result-row" data-driver="max verstappen ver red bull" data-round="1">
+          <td>1</td>
+          <td>Bahrain GP</td>
+          <td>
+            <span class="chip">VER</span> Max Verstappen
+          </td>
+          <td>Oracle Red Bull Racing</td>
+          <td>1</td>
+          <td>1</td>
+          <td>26</td>
+        </tr>
+        <tr data-testid="result-row" data-driver="charles leclerc lec ferrari" data-round="2">
+          <td>2</td>
+          <td>Saudi Arabian GP</td>
+          <td>
+            <span class="chip">LEC</span> Charles Leclerc
+          </td>
+          <td>Scuderia Ferrari</td>
+          <td>1</td>
+          <td>1</td>
+          <td>26</td>
+        </tr>
+        <tr data-testid="result-row" data-driver="oscar piastri pia mclaren" data-round="3">
+          <td>3</td>
+          <td>Australian GP</td>
+          <td>
+            <span class="chip">PIA</span> Oscar Piastri
+          </td>
+          <td>McLaren F1 Team</td>
+          <td>2</td>
+          <td>1</td>
+          <td>26</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="empty is-hidden" data-testid="empty-state">
+      No drivers match "<span data-testid="empty-query"></span>". Try a different filter.
+    </p>
+  </main>
+
+  <script>
+    (function () {
+      const filterInput = document.querySelector('[data-testid="driver-filter"]');
+      const clearButton = document.querySelector('[data-testid="clear-filter"]');
+      const rows = () => Array.from(document.querySelectorAll('[data-testid="result-row"]'));
+      const emptyState = document.querySelector('[data-testid="empty-state"]');
+      const emptyQuery = document.querySelector('[data-testid="empty-query"]');
+      const statusBanner = document.querySelector('[data-testid="status-banner"]');
+      const refreshButton = document.querySelector('[data-testid="refresh-button"]');
+      const body = document.querySelector('[data-testid="results-body"]');
+
+      function applyFilter() {
+        const query = filterInput.value.trim().toLowerCase();
+        let visibleCount = 0;
+
+        rows().forEach((row) => {
+          const matches = query.length === 0 || row.dataset.driver.includes(query);
+          row.classList.toggle('is-hidden', !matches);
+          if (matches) {
+            visibleCount += 1;
+          }
+        });
+
+        emptyState.classList.toggle('is-hidden', visibleCount !== 0);
+        emptyQuery.textContent = query || 'all drivers';
+      }
+
+      filterInput.addEventListener('input', applyFilter);
+      clearButton.addEventListener('click', () => {
+        filterInput.value = '';
+        applyFilter();
+        filterInput.focus();
+      });
+
+      refreshButton.addEventListener('click', () => {
+        if (refreshButton.disabled) {
+          return;
+        }
+
+        statusBanner.dataset.state = 'loading';
+        statusBanner.textContent = 'Loading latest classification...';
+        refreshButton.disabled = true;
+
+        setTimeout(() => {
+          const existing = document.querySelector('[data-round="11"]');
+          if (!existing) {
+            const row = document.createElement('tr');
+            row.setAttribute('data-testid', 'result-row');
+            row.dataset.driver = 'lando norris nor mclaren';
+            row.dataset.round = '11';
+            row.innerHTML = `
+              <td>11</td>
+              <td>Miami GP</td>
+              <td><span class="chip">NOR</span> Lando Norris</td>
+              <td>McLaren F1 Team</td>
+              <td>5</td>
+              <td>1</td>
+              <td>25</td>
+            `;
+            body.prepend(row);
+          }
+
+          statusBanner.dataset.state = 'idle';
+          statusBanner.textContent = 'Updated from live timing';
+          refreshButton.disabled = false;
+          applyFilter();
+        }, 650);
+      });
+
+      applyFilter();
+    })();
+  </script>
+</body>
+
+</html>
