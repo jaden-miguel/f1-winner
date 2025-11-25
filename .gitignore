@@ -1,3 +1,7 @@
 cache/
 data.csv
 __pycache__/
+node_modules/
+playwright-report/
+test-results/
+playwright/artifacts/
