@@ -63,3 +63,7 @@ Applications. Data and cache are stored in
 
 Race and timing data is retrieved via `fastf1`, which accesses the official F1
 live timing API.
+
+## Screenshot
+
+![ApexAI GUI](screenshot.png)
