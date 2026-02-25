@@ -232,7 +232,7 @@ class ApexAI:
         banner.configure(highlightbackground=BORDER, highlightthickness=1)
         banner.pack(fill=tk.X, pady=(0, 16))
 
-        tk.Label(banner, text=f"NEXT RACE · Round {nr['round']} ({nr['year']})", font=("Helvetica Neue", 10, "bold"), fg=GOLD, bg=BG_CARD).pack(anchor="w", pady=(0, 12))
+        tk.Label(banner, text=f"NEXT RACE · {nr['name']} ({nr['year']})", font=("Helvetica Neue", 10, "bold"), fg=GOLD, bg=BG_CARD).pack(anchor="w", pady=(0, 12))
 
         wb = tk.Frame(banner, bg=GOLD_DIM, padx=20, pady=16)
         wb.pack(fill=tk.X, pady=(0, 16))
@@ -282,7 +282,7 @@ class ApexAI:
         lr_card = tk.Frame(self.results, bg=BG_CARD, padx=20, pady=16)
         lr_card.configure(highlightbackground=BORDER, highlightthickness=1)
         lr_card.pack(fill=tk.X, pady=(0, 16))
-        tk.Label(lr_card, text=f"LAST RACE · Round {lr['round']} ({lr['year']})", font=("Helvetica Neue", 10, "bold"), fg=GOLD, bg=BG_CARD).pack(anchor="w", pady=(0, 10))
+        tk.Label(lr_card, text=f"LAST RACE · {lr['name']} ({lr['year']})", font=("Helvetica Neue", 10, "bold"), fg=GOLD, bg=BG_CARD).pack(anchor="w", pady=(0, 10))
 
         pred, actual = lr["predicted_winner"], lr["actual_winner"]
         hit = pred == actual
@@ -328,7 +328,7 @@ class ApexAI:
         # Header
         hdr = tk.Frame(card, bg=BG_SURFACE, padx=10, pady=6)
         hdr.pack(fill=tk.X, pady=(0, 4))
-        for txt, w in [("Year", 5), ("Rnd", 4), ("Predicted", 10), ("Actual", 10), ("", 3)]:
+        for txt, w in [("Year", 5), ("Race", 22), ("Predicted", 10), ("Actual", 10), ("", 3)]:
             tk.Label(hdr, text=txt, font=("Helvetica Neue", 9, "bold"), fg=MUTED, bg=BG_SURFACE, width=w, anchor="w").pack(side=tk.LEFT, padx=2)
 
         for race in r["all_races"]:
@@ -336,7 +336,8 @@ class ApexAI:
             row.pack(fill=tk.X)
             fg = GREEN if race["correct"] else RED
             mark = "✓" if race["correct"] else "✗"
-            for txt, w in [(str(race["year"]), 5), (f"R{race['round']}", 4), (race["predicted"], 10), (race["actual"], 10), (mark, 3)]:
+            race_name = race.get("name", f"R{race['round']}")
+            for txt, w in [(str(race["year"]), 5), (race_name, 22), (race["predicted"], 10), (race["actual"], 10), (mark, 3)]:
                 tk.Label(row, text=txt, font=("Menlo", 10), fg=fg if txt == mark else GRAY, bg=BG_CARD, width=w, anchor="w").pack(side=tk.LEFT, padx=2)
 
     # -- Shared helpers --

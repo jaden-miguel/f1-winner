@@ -275,6 +275,14 @@ def run_predictions(progress_callback=None, target_year=2026):
             except Exception:
                 pass
 
+        # Resolve race names from schedule
+        try:
+            last_schedule = fastf1.get_event_schedule(last_year, include_testing=False)
+            last_race_event = last_schedule[last_schedule["RoundNumber"] == last_round]
+            last_race_name = last_race_event.iloc[0]["EventName"] if not last_race_event.empty else f"Round {last_round}"
+        except Exception:
+            last_race_name = f"Round {last_round}"
+
         # Last race predictions
         probs = best_model.predict_proba(test_df[features])[:, 1]
         test_df = test_df.copy()
@@ -293,11 +301,14 @@ def run_predictions(progress_callback=None, target_year=2026):
 
         # Next round
         report("Predicting next race...")
+        next_race_name = None
         if target_year and target_year > last_year:
             next_year = target_year
             try:
                 next_schedule = fastf1.get_event_schedule(next_year, include_testing=False)
                 next_round = int(next_schedule["RoundNumber"].min())
+                next_event = next_schedule[next_schedule["RoundNumber"] == next_round]
+                next_race_name = next_event.iloc[0]["EventName"] if not next_event.empty else None
             except Exception:
                 next_round = 1
         else:
@@ -306,13 +317,19 @@ def run_predictions(progress_callback=None, target_year=2026):
             if last_round < max_round:
                 next_year = last_year
                 next_round = int(last_round) + 1
+                next_event = schedule[schedule["RoundNumber"] == next_round]
+                next_race_name = next_event.iloc[0]["EventName"] if not next_event.empty else None
             else:
                 next_year = last_year + 1
                 try:
                     next_schedule = fastf1.get_event_schedule(next_year, include_testing=False)
                     next_round = int(next_schedule["RoundNumber"].min())
+                    next_event = next_schedule[next_schedule["RoundNumber"] == next_round]
+                    next_race_name = next_event.iloc[0]["EventName"] if not next_event.empty else None
                 except Exception:
                     next_round = 1
+        if not next_race_name:
+            next_race_name = f"Round {next_round}"
 
         lineup = get_lineup_for_next_round(df, next_year, features)
         next_probs = best_model.predict_proba(lineup[features])[:, 1]
@@ -356,6 +373,7 @@ def run_predictions(progress_callback=None, target_year=2026):
             "last_race": {
                 "year": last_year,
                 "round": last_round,
+                "name": last_race_name,
                 "predicted_winner": pred_winner["abbreviation"],
                 "actual_winner": actual_abbr,
                 "predictions": last_race_preds,
@@ -363,6 +381,7 @@ def run_predictions(progress_callback=None, target_year=2026):
             "next_race": {
                 "year": next_year,
                 "round": next_round,
+                "name": next_race_name,
                 "predicted_winner": next_race_preds[0]["abbreviation"],
                 "top_probability": next_race_preds[0]["probability"],
                 "predictions": next_race_preds,
@@ -404,6 +423,8 @@ def run_predictions_all_races(progress_callback=None):
         total = len(races)
         correct = 0
 
+        schedule_cache = {}
+
         for idx, ((year, rnd), race_df) in enumerate(races):
             report(f"Race {idx + 1}/{total}: {year} R{rnd}...")
             train_df = df[~((df["Year"] == year) & (df["Round"] == rnd))]
@@ -427,9 +448,21 @@ def run_predictions_all_races(progress_callback=None):
             if hit:
                 correct += 1
 
+            race_name = f"Round {int(rnd)}"
+            try:
+                if year not in schedule_cache:
+                    schedule_cache[year] = fastf1.get_event_schedule(int(year), include_testing=False)
+                sched = schedule_cache[year]
+                evt = sched[sched["RoundNumber"] == int(rnd)]
+                if not evt.empty:
+                    race_name = evt.iloc[0]["EventName"]
+            except Exception:
+                pass
+
             results.append({
                 "year": int(year),
                 "round": int(rnd),
+                "name": race_name,
                 "predicted": pred_abbr,
                 "actual": actual_abbr,
                 "correct": hit,
