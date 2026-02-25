@@ -1,3 +1,10 @@
 cache/
 data.csv
 __pycache__/
+build/
+dist/
+*.spec
+.build_venv/
+.venv/
+model_cache.pkl
+*.pyc
