@@ -299,36 +299,43 @@ def run_predictions(progress_callback=None, target_year=2026):
         actual_winner = test_df[test_df["Winner"] == 1]
         actual_abbr = actual_winner.iloc[0]["Abbreviation"] if not actual_winner.empty else "—"
 
-        # Next round
+        # Next round – find the actual next upcoming race by date
+        import datetime
         report("Predicting next race...")
         next_race_name = None
+        today = datetime.date.today()
+
+        def _find_next_race(year):
+            """Find the next race in `year` that hasn't happened yet."""
+            schedule = fastf1.get_event_schedule(year, include_testing=False)
+            upcoming = schedule[schedule["EventDate"].dt.date >= today]
+            if not upcoming.empty:
+                evt = upcoming.iloc[0]
+                return year, int(evt["RoundNumber"]), evt["EventName"]
+            return None
+
+        found = None
         if target_year and target_year > last_year:
-            next_year = target_year
             try:
-                next_schedule = fastf1.get_event_schedule(next_year, include_testing=False)
-                next_round = int(next_schedule["RoundNumber"].min())
-                next_event = next_schedule[next_schedule["RoundNumber"] == next_round]
-                next_race_name = next_event.iloc[0]["EventName"] if not next_event.empty else None
+                found = _find_next_race(target_year)
             except Exception:
-                next_round = 1
+                pass
+        if not found:
+            try:
+                found = _find_next_race(last_year)
+            except Exception:
+                pass
+        if not found:
+            try:
+                found = _find_next_race(last_year + 1)
+            except Exception:
+                pass
+
+        if found:
+            next_year, next_round, next_race_name = found
         else:
-            schedule = fastf1.get_event_schedule(last_year, include_testing=False)
-            max_round = schedule["RoundNumber"].max()
-            if last_round < max_round:
-                next_year = last_year
-                next_round = int(last_round) + 1
-                next_event = schedule[schedule["RoundNumber"] == next_round]
-                next_race_name = next_event.iloc[0]["EventName"] if not next_event.empty else None
-            else:
-                next_year = last_year + 1
-                try:
-                    next_schedule = fastf1.get_event_schedule(next_year, include_testing=False)
-                    next_round = int(next_schedule["RoundNumber"].min())
-                    next_event = next_schedule[next_schedule["RoundNumber"] == next_round]
-                    next_race_name = next_event.iloc[0]["EventName"] if not next_event.empty else None
-                except Exception:
-                    next_round = 1
-        if not next_race_name:
+            next_year = target_year or last_year + 1
+            next_round = 1
             next_race_name = f"Round {next_round}"
 
         lineup = get_lineup_for_next_round(df, next_year, features)
@@ -368,6 +375,19 @@ def run_predictions(progress_callback=None, target_year=2026):
         except Exception:
             feature_importance = {}
 
+        # Build full schedule for race cycling
+        schedule_list = []
+        try:
+            sched = fastf1.get_event_schedule(next_year, include_testing=False)
+            for _, row in sched.iterrows():
+                schedule_list.append({
+                    "round": int(row["RoundNumber"]),
+                    "name": row["EventName"],
+                    "date": str(row["EventDate"].date()),
+                })
+        except Exception:
+            pass
+
         return {
             "feature_importance": feature_importance,
             "last_race": {
@@ -386,11 +406,41 @@ def run_predictions(progress_callback=None, target_year=2026):
                 "top_probability": next_race_preds[0]["probability"],
                 "predictions": next_race_preds,
             },
+            "schedule": schedule_list,
             "accuracy": accuracy,
+            "_model": best_model,
+            "_features": features,
+            "_base_lineup": lineup[["DriverNumber", "Abbreviation", "TeamName"]].to_dict("records"),
+            "_base_driver_pts": lineup.set_index("Abbreviation")["DriverPointsBefore"].to_dict(),
+            "_base_team_pts": lineup.drop_duplicates("TeamName").set_index("TeamName")["TeamPointsBefore"].to_dict(),
         }
     except Exception as e:
         import traceback
         return {"error": f"{str(e)}\n\n{traceback.format_exc()}"}
+
+
+F1_POINTS = {1: 25, 2: 18, 3: 15, 4: 12, 5: 10, 6: 8, 7: 6, 8: 4, 9: 2, 10: 1}
+
+
+def predict_with_standings(model, features, base_lineup, driver_pts, team_pts):
+    """Re-run predictions with updated championship standings."""
+    lineup = pd.DataFrame(base_lineup)
+    lineup["DriverPointsBefore"] = lineup["Abbreviation"].map(driver_pts).fillna(0)
+    lineup["TeamPointsBefore"] = lineup["TeamName"].map(team_pts).fillna(0)
+    lineup["GridPosition"] = 0
+
+    probs = model.predict_proba(lineup[features])[:, 1]
+    lineup["WinProbability"] = probs
+    lineup = lineup.sort_values("WinProbability", ascending=False)
+
+    return [
+        {
+            "abbreviation": row["Abbreviation"],
+            "team": row["TeamName"],
+            "probability": float(row["WinProbability"]),
+        }
+        for _, row in lineup.iterrows()
+    ]
 
 
 def run_predictions_all_races(progress_callback=None):
