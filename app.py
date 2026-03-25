@@ -4,6 +4,8 @@ ApexAI – F1 winner prediction
 """
 import io
 import math
+import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -32,51 +34,85 @@ from team_colors import TEAM_COLORS
 from team_logos import load_logo
 from track_layouts import get_track
 
-# -- Theme --
-BG = "#06060a"
-BG_SURFACE = "#0d0d14"
-BG_CARD = "#111118"
-BG_HOVER = "#18181f"
-BORDER = "#1e1e28"
-GOLD = "#d4a926"
-GOLD_DIM = "#8a7020"
-GOLD_GLOW = "#f5d547"
-WHITE = "#f0f0f2"
-GRAY = "#8888a0"
-MUTED = "#505068"
-RED = "#e0443a"
-GREEN = "#3ae08a"
+try:
+    import f1radio
+    HAS_RADIO = True
+except ImportError:
+    HAS_RADIO = False
+
+# -- Theme: Black + Red / Carbon Fiber --
+BG = "#080808"
+BG_SURFACE = "#0e0e0f"
+BG_CARD = "#121213"
+BG_HOVER = "#1c1c1e"
+BORDER = "#2a1216"
+GOLD = "#d4232a"
+GOLD_DIM = "#3a0e12"
+GOLD_GLOW = "#ff3038"
+WHITE = "#f0f0f0"
+GRAY = "#8a8a90"
+MUTED = "#58585e"
+RED = "#d4232a"
+GREEN = "#2ed87a"
+
+# Carbon-fiber accent: thin red stripe on borders, dark weave texture on panels
+CF_LIGHT = "#161617"
+CF_DARK = "#0f0f10"
 
 
 def tc(team: str) -> str:
     return TEAM_COLORS.get(team, "#555566")
 
 
+def _make_carbon_fiber_img(w, h):
+    """Generate a carbon fiber weave texture using PIL."""
+    if not HAS_PIL:
+        return None
+    img = Image.new("RGB", (w, h), (12, 12, 13))
+    pix = img.load()
+    for y in range(h):
+        for x in range(w):
+            cell_x, cell_y = x % 6, y % 6
+            if (cell_x < 3) == (cell_y < 3):
+                pix[x, y] = (15, 15, 16)
+            else:
+                pix[x, y] = (11, 11, 12)
+            if cell_x == 0 or cell_y == 0:
+                pix[x, y] = (9, 9, 10)
+    return img
+
+
 ALGO_TEXT = """\
-# ApexAI · Random Forest Pipeline
+# ApexAI · Gradient Boosting Pipeline
 
 features = [
   "Abbreviation",       # VER, HAM, NOR...
   "TeamName",           # Ferrari, McLaren...
   "GridPosition",       # Starting grid slot
-  "DriverNumber",       # Car number
+  "RecentAvgPos",       # Avg finish, last 5
+  "RecentWinRate",      # Win % in last 10
+  "RecentPodiumRate",   # Podium % in last 10
+  "DriverExperience",   # Career race count
+  "HeadToHead",         # % beating teammate
+  "TeamRecentForm",     # Team avg finish
   "DriverPointsBefore", # Cumulative driver pts
   "TeamPointsBefore",   # Cumulative team pts
 ]
 
 preprocess = ColumnTransformer([
-  OneHotEncoder → Abbreviation, TeamName
+  OneHotEncoder → driver, team
   StandardScaler → numeric features
 ])
 
-model = RandomForestClassifier(
-  n_estimators = 150–250,
-  max_depth    = 10–20,
+model = GradientBoostingClassifier(
+  n_estimators = 200–500,
+  max_depth    = 4–8,
+  learning_rate= 0.05–0.15,
 )
 
 tuning = RandomizedSearchCV(
-  n_iter=4, cv=3,
-  scoring="accuracy",
+  n_iter=12, cv=5,
+  scoring="f1",
 )
 
 output = model.predict_proba(X)[:, 1]
@@ -205,22 +241,25 @@ class ApexAI:
         tk.Label(hdr, text="AI", font=("Helvetica Neue", 28, "bold"), fg=WHITE, bg=BG).pack(side=tk.LEFT)
         tk.Label(hdr, text="F1 Race Predictor", font=("Helvetica Neue", 12), fg=MUTED, bg=BG).pack(side=tk.LEFT, padx=(16, 0), pady=(8, 0))
 
-        tk.Frame(self.root, bg=GOLD_DIM, height=1).pack(fill=tk.X, padx=36)
+        tk.Frame(self.root, bg=RED, height=2).pack(fill=tk.X, padx=36)
 
         # Controls
         ctrl = tk.Frame(self.root, bg=BG, padx=36, pady=16)
         ctrl.pack(fill=tk.X)
 
-        self.btn_predict = self._make_btn(ctrl, "Predict Next Race", "#1c1c26", WHITE, self._on_predict, border=BORDER)
+        self.btn_predict = self._make_btn(ctrl, "Predict Next Race", "#141415", WHITE, self._on_predict, border=BORDER)
         self.btn_predict.pack(side=tk.LEFT, padx=(0, 10))
 
-        self.btn_all = self._make_btn(ctrl, "Backtest All Races", "#1c1c26", WHITE, self._on_all_races, border=BORDER)
+        self.btn_all = self._make_btn(ctrl, "Backtest All Races", "#141415", WHITE, self._on_all_races, border=BORDER)
         self.btn_all.pack(side=tk.LEFT, padx=(0, 10))
 
-        self.btn_viz = self._make_btn(ctrl, "Race Visualization", "#1c1c26", WHITE, self._on_show_viz, border=BORDER)
-        self.btn_viz.pack(side=tk.LEFT, padx=(0, 16))
+        self.btn_viz = self._make_btn(ctrl, "Race Visualization", "#141415", WHITE, self._on_show_viz, border=BORDER)
+        self.btn_viz.pack(side=tk.LEFT, padx=(0, 10))
 
-        self._all_btns = [self.btn_predict, self.btn_all, self.btn_viz]
+        self.btn_radio = self._make_btn(ctrl, "Team Radio", "#141415", WHITE, self._on_show_radio, border=BORDER)
+        self.btn_radio.pack(side=tk.LEFT, padx=(0, 16))
+
+        self._all_btns = [self.btn_predict, self.btn_all, self.btn_viz, self.btn_radio]
 
         self.status_lbl = tk.Label(ctrl, text="", font=("Helvetica Neue", 11), fg=MUTED, bg=BG)
         self.status_lbl.pack(side=tk.LEFT, padx=(8, 0))
@@ -232,6 +271,14 @@ class ApexAI:
 
         # Track visualization view (hidden initially)
         self.viz_frame = tk.Frame(self.root, bg=BG, padx=36, pady=8)
+
+        # Team radio view (hidden initially)
+        self.radio_frame = tk.Frame(self.root, bg=BG, padx=36, pady=8)
+        self._radio_clips = []
+        self._radio_playing = None
+        self._radio_proc = None
+        self._radio_wave_items = []
+        self._radio_anim_running = False
 
         # Left panel – results
         left = tk.Frame(body, bg=BG)
@@ -248,13 +295,15 @@ class ApexAI:
         for w in (self.canvas, self.results):
             w.bind("<MouseWheel>", self._scroll)
 
-        # Right panel – algorithm
+        # Right panel – algorithm (carbon fiber accent)
         right = tk.Frame(body, bg=BG_CARD, width=320, padx=20, pady=20)
         right.pack(side=tk.RIGHT, fill=tk.Y)
         right.pack_propagate(False)
         right.configure(highlightbackground=BORDER, highlightthickness=1)
 
-        tk.Label(right, text="ALGORITHM", font=("Helvetica Neue", 10, "bold"), fg=GOLD, bg=BG_CARD).pack(anchor="w")
+        # Red accent stripe at top
+        tk.Frame(right, bg=RED, height=2).pack(fill=tk.X, pady=(0, 12))
+        tk.Label(right, text="ALGORITHM", font=("Helvetica Neue", 10, "bold"), fg=RED, bg=BG_CARD).pack(anchor="w")
         tk.Frame(right, bg=BORDER, height=1).pack(fill=tk.X, pady=(8, 12))
 
         code = tk.Text(right, font=("Menlo", 9), fg=GRAY, bg=BG_SURFACE, relief=tk.FLAT, padx=10, pady=10, wrap=tk.WORD, height=20, insertbackground=GRAY)
@@ -375,7 +424,9 @@ class ApexAI:
         team_pts = {k: base_team_pts.get(k, 0) + self._season_team_pts.get(k, 0)
                     for k in set(base_team_pts) | set(self._season_team_pts)}
 
-        new_preds = predict_with_standings(model, features, base_lineup, driver_pts, team_pts)
+        extra = r.get("_extra_features", {})
+        new_preds = predict_with_standings(model, features, base_lineup, driver_pts, team_pts,
+                                           extra_features=extra)
 
         new_nr = {
             "year": nr["year"],
@@ -609,14 +660,18 @@ class ApexAI:
     def _switch_to_view(self, view):
         self._current_view = view
         self._anim_running = False
+        self.body.pack_forget()
+        self.viz_frame.pack_forget()
+        self.radio_frame.pack_forget()
         if view == "predictions":
-            self.viz_frame.pack_forget()
             self.body.pack(fill=tk.BOTH, expand=True)
             self._set_active_btn(None)
         elif view == "viz":
-            self.body.pack_forget()
             self.viz_frame.pack(fill=tk.BOTH, expand=True)
             self._set_active_btn(self.btn_viz)
+        elif view == "radio":
+            self.radio_frame.pack(fill=tk.BOTH, expand=True)
+            self._set_active_btn(self.btn_radio)
 
     def _on_show_viz(self):
         if self._current_view == "viz":
@@ -627,6 +682,377 @@ class ApexAI:
             return
         self._build_viz()
         self._switch_to_view("viz")
+
+    def _on_show_radio(self):
+        if self._current_view == "radio":
+            self._stop_radio()
+            self._switch_to_view("predictions")
+            return
+        if not HAS_RADIO:
+            self._set_status("f1radio package not installed (pip install f1radio)")
+            return
+        self._build_radio()
+        self._switch_to_view("radio")
+
+    # ── Team Radio ──
+
+    RADIO_RACES = [
+        (2025, "Australia"), (2025, "China"), (2025, "Japan"),
+        (2025, "Bahrain"), (2025, "Saudi Arabia"), (2025, "Miami"),
+        (2025, "Emilia Romagna"), (2025, "Monaco"), (2025, "Spain"),
+        (2025, "Canada"), (2025, "Austria"), (2025, "Great Britain"),
+        (2025, "Belgium"), (2025, "Hungary"), (2025, "Netherlands"),
+        (2025, "Italy"), (2025, "Azerbaijan"), (2025, "Singapore"),
+        (2025, "United States"), (2025, "Mexico"), (2025, "Brazil"),
+        (2025, "Las Vegas"), (2025, "Qatar"), (2025, "Abu Dhabi"),
+    ]
+
+    def _build_radio(self):
+        self._stop_radio()
+        for w in self.radio_frame.winfo_children():
+            w.destroy()
+        self._radio_tk_images = []
+
+        # Header
+        top = tk.Frame(self.radio_frame, bg=BG)
+        top.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(top, text="TEAM RADIO", font=("Helvetica Neue", 16, "bold"),
+                 fg=GOLD, bg=BG).pack(side=tk.LEFT)
+        tk.Label(top, text="Listen to driver-team communications",
+                 font=("Helvetica Neue", 11), fg=MUTED, bg=BG
+                 ).pack(side=tk.LEFT, padx=(16, 0), pady=(3, 0))
+
+        tk.Frame(self.radio_frame, bg=BORDER, height=1).pack(fill=tk.X)
+
+        # Two-column layout
+        content = tk.Frame(self.radio_frame, bg=BG)
+        content.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+
+        # Left: race selector
+        left_panel = tk.Frame(content, bg=BG_CARD, width=220, padx=12, pady=12)
+        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 12))
+        left_panel.pack_propagate(False)
+        left_panel.configure(highlightbackground=BORDER, highlightthickness=1)
+
+        tk.Label(left_panel, text="SELECT RACE", font=("Helvetica Neue", 9, "bold"),
+                 fg=GOLD, bg=BG_CARD).pack(anchor="w")
+        tk.Frame(left_panel, bg=BORDER, height=1).pack(fill=tk.X, pady=(6, 8))
+
+        race_scroll_frame = tk.Frame(left_panel, bg=BG_CARD)
+        race_scroll_frame.pack(fill=tk.BOTH, expand=True)
+
+        race_canvas = tk.Canvas(race_scroll_frame, bg=BG_CARD, highlightthickness=0)
+        race_sb = ttk.Scrollbar(race_scroll_frame, orient="vertical", command=race_canvas.yview)
+        race_inner = tk.Frame(race_canvas, bg=BG_CARD)
+        race_inner.bind("<Configure>", lambda e: race_canvas.configure(scrollregion=race_canvas.bbox("all")))
+        race_canvas.create_window((0, 0), window=race_inner, anchor="nw")
+        race_canvas.configure(yscrollcommand=race_sb.set)
+        race_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        race_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        for w in (race_canvas, race_inner):
+            w.bind("<MouseWheel>", lambda e, c=race_canvas: (
+                c.yview_scroll(int(-1 * (e.delta / 120)), "units"), "break"
+            )[-1])
+
+        self._race_btns = []
+        for yr, race in self.RADIO_RACES:
+            rb = tk.Frame(race_inner, bg=BG_SURFACE, cursor="hand2",
+                          highlightbackground=BORDER, highlightthickness=1)
+            rb.pack(fill=tk.X, pady=2)
+            lbl = tk.Label(rb, text=f"  {race}", font=("Helvetica Neue", 10),
+                           fg=GRAY, bg=BG_SURFACE, anchor="w", padx=6, pady=5,
+                           cursor="hand2")
+            lbl.pack(fill=tk.X)
+            rb._lbl = lbl
+            rb._race = (yr, race)
+            for w in (rb, lbl):
+                w.bind("<Button-1>", lambda e, r=(yr, race), b=rb: self._load_radio_race(r, b))
+                w.bind("<Enter>", lambda e, b=rb: (
+                    b.configure(bg=BG_HOVER), b._lbl.configure(bg=BG_HOVER)
+                ))
+                w.bind("<Leave>", lambda e, b=rb: (
+                    b.configure(bg=getattr(b, '_sel_bg', BG_SURFACE)),
+                    b._lbl.configure(bg=getattr(b, '_sel_bg', BG_SURFACE))
+                ))
+            self._race_btns.append(rb)
+
+        # Right: clips panel
+        right_panel = tk.Frame(content, bg=BG_CARD, padx=16, pady=16)
+        right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        right_panel.configure(highlightbackground=BORDER, highlightthickness=1)
+
+        # Now-playing bar
+        np_bar = tk.Frame(right_panel, bg=BG_SURFACE, padx=12, pady=10)
+        np_bar.pack(fill=tk.X, pady=(0, 10))
+        np_bar.configure(highlightbackground=BORDER, highlightthickness=1)
+
+        self._np_canvas = tk.Canvas(np_bar, bg=BG_SURFACE, highlightthickness=0,
+                                     height=36, width=50)
+        self._np_canvas.pack(side=tk.LEFT, padx=(0, 10))
+
+        np_text = tk.Frame(np_bar, bg=BG_SURFACE)
+        np_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._np_driver = tk.Label(np_text, text="No clip playing",
+                                    font=("Helvetica Neue", 12, "bold"),
+                                    fg=WHITE, bg=BG_SURFACE, anchor="w")
+        self._np_driver.pack(anchor="w")
+        self._np_detail = tk.Label(np_text, text="Select a race to load team radio",
+                                    font=("Helvetica Neue", 9), fg=MUTED,
+                                    bg=BG_SURFACE, anchor="w")
+        self._np_detail.pack(anchor="w")
+
+        stop_btn = self._make_btn(np_bar, "Stop", "#3a1a1a", RED,
+                                   self._stop_radio, border="#4a2222")
+        stop_btn.pack(side=tk.RIGHT)
+
+        # Clip list header
+        hdr = tk.Frame(right_panel, bg=BG_CARD)
+        hdr.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(hdr, text="RADIO CLIPS", font=("Helvetica Neue", 9, "bold"),
+                 fg=GOLD, bg=BG_CARD).pack(side=tk.LEFT)
+        self._clip_count_lbl = tk.Label(hdr, text="", font=("Helvetica Neue", 9),
+                                         fg=MUTED, bg=BG_CARD)
+        self._clip_count_lbl.pack(side=tk.RIGHT)
+
+        tk.Frame(right_panel, bg=BORDER, height=1).pack(fill=tk.X, pady=(0, 6))
+
+        # Scrollable clip list
+        clip_scroll = tk.Frame(right_panel, bg=BG_CARD)
+        clip_scroll.pack(fill=tk.BOTH, expand=True)
+
+        self._clip_canvas = tk.Canvas(clip_scroll, bg=BG_CARD, highlightthickness=0)
+        clip_sb = ttk.Scrollbar(clip_scroll, orient="vertical", command=self._clip_canvas.yview)
+        self._clip_inner = tk.Frame(self._clip_canvas, bg=BG_CARD)
+        self._clip_inner.bind("<Configure>",
+                               lambda e: self._clip_canvas.configure(
+                                   scrollregion=self._clip_canvas.bbox("all")))
+        self._clip_canvas.create_window((0, 0), window=self._clip_inner, anchor="nw")
+        self._clip_canvas.configure(yscrollcommand=clip_sb.set)
+        clip_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._clip_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        for w in (self._clip_canvas, self._clip_inner):
+            w.bind("<MouseWheel>", lambda e: (
+                self._clip_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"),
+                "break"
+            )[-1])
+
+        self._radio_loading_lbl = tk.Label(self._clip_inner, text="Select a race from the left panel",
+                                            font=("Helvetica Neue", 12), fg=MUTED, bg=BG_CARD,
+                                            pady=40)
+        self._radio_loading_lbl.pack()
+
+    def _load_radio_race(self, race_info, btn):
+        yr, race_name = race_info
+
+        for rb in self._race_btns:
+            rb._sel_bg = BG_SURFACE
+            rb.configure(bg=BG_SURFACE)
+            rb._lbl.configure(bg=BG_SURFACE, fg=GRAY)
+        btn._sel_bg = GOLD_DIM
+        btn.configure(bg=GOLD_DIM)
+        btn._lbl.configure(bg=GOLD_DIM, fg=GOLD)
+
+        self._stop_radio()
+        for w in self._clip_inner.winfo_children():
+            w.destroy()
+        self._radio_loading_lbl = tk.Label(self._clip_inner,
+                                            text=f"Loading radio clips for {race_name}...",
+                                            font=("Helvetica Neue", 12), fg=GOLD, bg=BG_CARD,
+                                            pady=40)
+        self._radio_loading_lbl.pack()
+        self._clip_count_lbl.configure(text="loading...")
+
+        def fetch():
+            try:
+                session = f1radio.load(yr, race_name, "R")
+                clips = session.clips
+                self.root.after(0, lambda: self._populate_clips(clips, race_name))
+            except Exception as e:
+                self.root.after(0, lambda: self._radio_error(str(e)))
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _radio_error(self, msg):
+        for w in self._clip_inner.winfo_children():
+            w.destroy()
+        tk.Label(self._clip_inner, text=f"Error: {msg}",
+                 font=("Helvetica Neue", 11), fg=RED, bg=BG_CARD,
+                 wraplength=400, pady=30).pack()
+        self._clip_count_lbl.configure(text="error")
+
+    def _populate_clips(self, clips, race_name):
+        for w in self._clip_inner.winfo_children():
+            w.destroy()
+        self._radio_clips = clips
+        self._clip_count_lbl.configure(text=f"{len(clips)} clips")
+
+        if not clips:
+            tk.Label(self._clip_inner, text="No radio clips available for this race.",
+                     font=("Helvetica Neue", 12), fg=MUTED, bg=BG_CARD, pady=30).pack()
+            return
+
+        for i, clip in enumerate(clips):
+            self._make_clip_row(i, clip)
+
+    def _make_clip_row(self, idx, clip):
+        color = tc(clip.team) if clip.team else GRAY
+        bg = BG_SURFACE if idx % 2 == 0 else BG_CARD
+
+        row = tk.Frame(self._clip_inner, bg=bg, padx=10, pady=8, cursor="hand2")
+        row.pack(fill=tk.X, pady=1)
+
+        # Color accent bar
+        accent = tk.Frame(row, bg=color, width=4)
+        accent.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+
+        # Play indicator
+        play_lbl = tk.Label(row, text="\u25B6", font=("Helvetica Neue", 14),
+                            fg=color, bg=bg, cursor="hand2")
+        play_lbl.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Driver info
+        info = tk.Frame(row, bg=bg)
+        info.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        driver_text = clip.driver_name or clip.driver or "Unknown"
+        team_text = clip.team or ""
+        tk.Label(info, text=driver_text,
+                 font=("Helvetica Neue", 11, "bold"), fg=WHITE, bg=bg,
+                 anchor="w").pack(anchor="w")
+
+        detail_parts = [team_text]
+        if clip.context and getattr(clip.context, "position", None):
+            detail_parts.append(f"P{clip.context.position}")
+        if clip.context and getattr(clip.context, "compound", None):
+            detail_parts.append(clip.context.compound)
+        if clip.context and getattr(clip.context, "lap_number", None):
+            detail_parts.append(f"Lap {clip.context.lap_number}")
+        detail = "  |  ".join(p for p in detail_parts if p)
+
+        tk.Label(info, text=detail, font=("Helvetica Neue", 9),
+                 fg=MUTED, bg=bg, anchor="w").pack(anchor="w")
+
+        # Clip number
+        tk.Label(row, text=f"#{idx + 1}", font=("Helvetica Neue", 9),
+                 fg=MUTED, bg=bg).pack(side=tk.RIGHT, padx=(10, 0))
+
+        row._clip_idx = idx
+        row._play_lbl = play_lbl
+        row._orig_bg = bg
+        for w in (row, play_lbl) + tuple(info.winfo_children()) + (info, accent):
+            w.bind("<Button-1>", lambda e, ci=idx: self._play_radio_clip(ci))
+            w.bind("<Enter>", lambda e, r=row: self._clip_hover(r, True))
+            w.bind("<Leave>", lambda e, r=row: self._clip_hover(r, False))
+
+    def _clip_hover(self, row, entering):
+        bg = BG_HOVER if entering else row._orig_bg
+        row.configure(bg=bg)
+        for w in row.winfo_children():
+            if isinstance(w, (tk.Label, tk.Frame)):
+                try:
+                    w.configure(bg=bg)
+                    for c in w.winfo_children():
+                        if isinstance(c, tk.Label):
+                            c.configure(bg=bg)
+                except Exception:
+                    pass
+
+    def _play_radio_clip(self, idx):
+        if idx >= len(self._radio_clips):
+            return
+        clip = self._radio_clips[idx]
+
+        self._stop_radio()
+
+        path = clip.local_path
+        if not path or not os.path.exists(path):
+            self._set_status("Audio file not available")
+            return
+
+        self._radio_playing = idx
+        driver_text = clip.driver_name or clip.driver or "Unknown"
+        team_text = clip.team or ""
+        self._np_driver.configure(text=f"{driver_text}", fg=tc(team_text) if team_text else WHITE)
+        self._np_detail.configure(text=f"{team_text}  |  Clip #{idx + 1}")
+
+        try:
+            self._radio_proc = subprocess.Popen(
+                ["afplay", path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        except FileNotFoundError:
+            try:
+                self._radio_proc = subprocess.Popen(
+                    ["ffplay", "-nodisp", "-autoexit", path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            except FileNotFoundError:
+                self._set_status("No audio player found (need afplay or ffplay)")
+                return
+
+        self._radio_anim_running = True
+        self._radio_wave_frame = 0
+        self._radio_wave_tick()
+
+        def wait_for_end():
+            self._radio_proc.wait()
+            self.root.after(0, self._on_radio_ended)
+        threading.Thread(target=wait_for_end, daemon=True).start()
+
+    def _stop_radio(self):
+        self._radio_anim_running = False
+        if self._radio_proc:
+            try:
+                self._radio_proc.terminate()
+                self._radio_proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self._radio_proc.kill()
+                except Exception:
+                    pass
+            self._radio_proc = None
+        self._radio_playing = None
+        if hasattr(self, "_np_driver"):
+            self._np_driver.configure(text="No clip playing", fg=WHITE)
+            self._np_detail.configure(text="Select a clip to play")
+        if hasattr(self, "_np_canvas"):
+            self._np_canvas.delete("all")
+
+    def _on_radio_ended(self):
+        self._radio_anim_running = False
+        self._radio_playing = None
+        if hasattr(self, "_np_canvas"):
+            self._np_canvas.delete("all")
+        if hasattr(self, "_np_driver"):
+            self._np_driver.configure(text="No clip playing", fg=WHITE)
+            self._np_detail.configure(text="Playback finished")
+
+    def _radio_wave_tick(self):
+        if not self._radio_anim_running or self._current_view != "radio":
+            return
+        c = self._np_canvas
+        c.delete("all")
+        w = 50
+        h = 36
+        frame = self._radio_wave_frame
+        bars = 8
+        bar_w = w / bars
+        for i in range(bars):
+            amp = 0.3 + 0.7 * abs(math.sin(frame * 0.12 + i * 0.8))
+            bh = amp * (h - 4)
+            x0 = i * bar_w + 2
+            x1 = x0 + bar_w - 2
+            y0 = (h - bh) / 2
+            y1 = y0 + bh
+            color_val = int(180 + 75 * amp)
+            green_val = int(160 * amp)
+            bar_color = f"#{min(255, color_val):02x}{green_val:02x}20"
+            c.create_rectangle(x0, y0, x1, y1, fill=bar_color, outline="")
+        self._radio_wave_frame += 1
+        self.root.after(50, self._radio_wave_tick)
 
     # ── Track visualization ──
 
@@ -1110,6 +1536,20 @@ class ApexAI:
         tw = max(28, min(48, int(min(cw, ch) * 0.045)))
         hw = tw / 2
 
+        # Carbon fiber background — tiled PIL image, built bottom-up for speed
+        if HAS_PIL:
+            tile = _make_carbon_fiber_img(6, 6)
+            if tile:
+                row = Image.new("RGB", (cw, 6), (10, 10, 11))
+                for tx in range(0, cw, 6):
+                    row.paste(tile, (tx, 0))
+                bg_img = Image.new("RGB", (cw, ch), (10, 10, 11))
+                for ty in range(0, ch, 6):
+                    bg_img.paste(row, (0, ty))
+                self._cf_bg = ImageTk.PhotoImage(bg_img)
+                canvas.create_image(0, 0, image=self._cf_bg, anchor="nw")
+                self._tk_images.append(self._cf_bg)
+
         self._draw_scene(canvas, cw, ch, track, hw, self._viz_circuit)
 
         # ── Track surface ──
@@ -1221,7 +1661,7 @@ class ApexAI:
                            fill=tc(p1["team"]))
         canvas.create_text(cx, cy + 32,
                            text=f"{p1['probability']*100:.1f}%  ·  {p1['team']}",
-                           font=("Helvetica Neue", 10), fill=GOLD)
+                           font=("Helvetica Neue", 10), fill=RED)
 
         if len(preds) >= 3:
             p2, p3 = preds[1], preds[2]
@@ -1241,8 +1681,9 @@ class ApexAI:
                                text=f"{p3['probability']*100:.1f}%",
                                font=("Helvetica Neue", 9), fill=MUTED)
 
-        # ── Animation state — float positions, all items created ONCE ──
-        n = len(preds)
+        # ── Animation — only top 8 drivers for performance ──
+        max_anim = min(8, len(preds))
+        n = max_anim
         lead_gap = num * 0.65
         spacing = lead_gap / max(n, 1)
         self._anim_targets = [lead_gap - i * spacing for i in range(n)]
@@ -1251,10 +1692,10 @@ class ApexAI:
         self._anim_running = True
         self._anim_hw = hw
         self._anim_num = float(num)
+        self._anim_count = n
 
-        # Pre-load logo images
         self._viz_logos = []
-        for p in preds:
+        for i, p in enumerate(preds[:max_anim]):
             if HAS_PIL:
                 logo_img = load_logo(p["team"], 18)
                 if logo_img:
@@ -1266,7 +1707,6 @@ class ApexAI:
             else:
                 self._viz_logos.append(None)
 
-        # Create all canvas items once at the start/finish
         sf = track[0]
         self._dot_ids = []
         self._dot_txt_ids = []
@@ -1277,7 +1717,8 @@ class ApexAI:
         self._glow_id = canvas.create_oval(0, 0, 0, 0, fill="", outline=GOLD_GLOW,
                                             width=2, state="hidden")
 
-        for i, p in enumerate(preds):
+        for i in range(max_anim):
+            p = preds[i]
             color = tc(p["team"])
             dot_r = 8 if i == 0 else 6 if i < 3 else 4
 
@@ -1292,14 +1733,16 @@ class ApexAI:
                                      fill=WHITE if i < 3 else BG)
             self._dot_txt_ids.append(txt)
 
+            # Trails only for top 3
             trails = []
-            for t_off in range(1, 3):
-                tr_r = dot_r * (1 - t_off * 0.3)
-                tr = canvas.create_oval(0, 0, 0, 0, fill=color, outline="",
-                                        stipple="gray25" if t_off == 1 else "gray12",
-                                        state="hidden")
-                trails.append(tr_r)
-                trails.append(tr)
+            if i < 3:
+                for t_off in range(1, 3):
+                    tr_r = dot_r * (1 - t_off * 0.3)
+                    tr = canvas.create_oval(0, 0, 0, 0, fill=color, outline="",
+                                            stipple="gray25" if t_off == 1 else "gray12",
+                                            state="hidden")
+                    trails.append(tr_r)
+                    trails.append(tr)
             self._trail_ids.append(trails)
 
             bg_fill = GOLD_DIM if i == 0 else BG_CARD
@@ -1312,7 +1755,7 @@ class ApexAI:
             card = canvas.create_rectangle(0, 0, 0, 0, fill=bg_fill, outline=color,
                                            width=border_w, state="hidden")
             logo_item = None
-            if self._viz_logos[i]:
+            if i < len(self._viz_logos) and self._viz_logos[i]:
                 logo_item = canvas.create_image(0, 0, image=self._viz_logos[i],
                                                 anchor="center", state="hidden")
             name_txt = canvas.create_text(0, 0, text=p["abbreviation"],
@@ -1327,7 +1770,255 @@ class ApexAI:
                 "name": name_txt, "prob": prob_txt
             })
 
+        self._create_scene_anims(canvas, cw, ch)
         self._anim_tick()
+
+    # ── Circuit-specific animated decorations ──
+
+    SCENE_ANIMS = {
+        "Albert Park": [("kangaroo", 2)],
+        "Suzuka": [("blossom", 15)],
+        "Shanghai": [("blossom", 8)],
+        "Miami Autodrome": [("sparkle_water", 6)],
+        "Monaco": [("sparkle_water", 8)],
+        "Las Vegas Strip": [("firework", 3), ("neon_flash", 5)],
+        "Sakhir": [("star", 10)],
+        "Lusail": [("star", 10)],
+        "Spa-Francorchamps": [("rain", 15)],
+        "Zandvoort": [("seagull", 2)],
+        "Marina Bay": [("firework", 2), ("sparkle_water", 5)],
+        "Yas Marina": [("sparkle_water", 5), ("star", 6)],
+        "Interlagos": [("blossom", 6)],
+        "Jeddah Corniche": [("star", 8)],
+        "Baku City Circuit": [("seagull", 2)],
+        "Silverstone": [("rain", 8)],
+        "Red Bull Ring": [("seagull", 2)],
+        "COTA": [("star", 5)],
+    }
+
+    def _create_scene_anims(self, canvas, cw, ch):
+        import random as _rng
+        self._rng = _rng
+        self._scene_items = []
+        anims = self.SCENE_ANIMS.get(self._viz_circuit, [])
+
+        for atype, count in anims:
+            for _ in range(count):
+                x = _rng.uniform(40, cw - 40)
+                y = _rng.uniform(40, ch - 40)
+
+                if atype == "blossom":
+                    size = _rng.uniform(3, 6)
+                    petal = canvas.create_oval(x, y, x + size, y + size,
+                                               fill="#ffb7c5", outline="#ff8fa3", width=1)
+                    self._scene_items.append({
+                        "type": "blossom", "id": petal,
+                        "x": x, "y": y, "size": size,
+                        "vx": _rng.uniform(-0.3, 0.3),
+                        "vy": _rng.uniform(0.4, 1.0),
+                        "sway": _rng.uniform(0, 6.28),
+                        "cw": cw, "ch": ch,
+                    })
+
+                elif atype == "kangaroo":
+                    x = _rng.uniform(60, cw - 60)
+                    y = _rng.uniform(ch * 0.3, ch * 0.7)
+                    body = canvas.create_oval(x - 8, y - 5, x + 8, y + 5,
+                                               fill="#8B6914", outline="#6B4F12")
+                    head = canvas.create_oval(x + 5, y - 10, x + 13, y - 2,
+                                               fill="#8B6914", outline="#6B4F12")
+                    ear1 = canvas.create_oval(x + 7, y - 14, x + 10, y - 9,
+                                               fill="#A07818", outline="#6B4F12")
+                    ear2 = canvas.create_oval(x + 10, y - 14, x + 13, y - 9,
+                                               fill="#A07818", outline="#6B4F12")
+                    tail = canvas.create_line(x - 8, y, x - 18, y - 6,
+                                               fill="#6B4F12", width=2)
+                    self._scene_items.append({
+                        "type": "kangaroo",
+                        "ids": [body, head, ear1, ear2, tail],
+                        "base_x": x, "base_y": y,
+                        "phase": _rng.uniform(0, 6.28),
+                        "speed": _rng.uniform(0.03, 0.06),
+                        "hop_h": _rng.uniform(8, 16),
+                        "direction": _rng.choice([-1, 1]),
+                    })
+
+                elif atype == "firework":
+                    sparks = []
+                    cx = _rng.uniform(cw * 0.2, cw * 0.8)
+                    cy = _rng.uniform(ch * 0.1, ch * 0.4)
+                    color = _rng.choice(["#ff4444", "#44ff44", "#ffaa00",
+                                          "#ff66ff", "#44aaff", GOLD_GLOW])
+                    for j in range(8):
+                        angle = j * 0.785
+                        sid = canvas.create_oval(cx - 2, cy - 2, cx + 2, cy + 2,
+                                                  fill=color, outline="", state="hidden")
+                        sparks.append({"id": sid, "angle": angle})
+                    self._scene_items.append({
+                        "type": "firework", "sparks": sparks,
+                        "cx": cx, "cy": cy, "color": color,
+                        "phase": _rng.uniform(0, 200),
+                        "period": _rng.uniform(120, 250),
+                        "cw": cw, "ch": ch,
+                    })
+
+                elif atype == "star":
+                    x = _rng.uniform(20, cw - 20)
+                    y = _rng.uniform(10, ch * 0.35)
+                    star = canvas.create_oval(x - 1, y - 1, x + 1, y + 1,
+                                               fill="#ffffff", outline="")
+                    self._scene_items.append({
+                        "type": "star", "id": star,
+                        "x": x, "y": y,
+                        "phase": _rng.uniform(0, 6.28),
+                        "speed": _rng.uniform(0.02, 0.08),
+                        "base_size": _rng.uniform(0.5, 2.0),
+                    })
+
+                elif atype == "rain":
+                    x = _rng.uniform(0, cw)
+                    y = _rng.uniform(-20, ch)
+                    drop = canvas.create_line(x, y, x - 1, y + 8,
+                                               fill="#4488aa", width=1)
+                    self._scene_items.append({
+                        "type": "rain", "id": drop,
+                        "x": x, "y": y,
+                        "speed": _rng.uniform(3, 6),
+                        "cw": cw, "ch": ch,
+                    })
+
+                elif atype == "sparkle_water":
+                    x = _rng.uniform(20, cw - 20)
+                    y = _rng.uniform(ch * 0.6, ch - 30)
+                    sp = canvas.create_oval(x - 1, y - 1, x + 1, y + 1,
+                                             fill="#aaddff", outline="")
+                    self._scene_items.append({
+                        "type": "sparkle_water", "id": sp,
+                        "x": x, "y": y,
+                        "phase": _rng.uniform(0, 6.28),
+                        "speed": _rng.uniform(0.04, 0.10),
+                    })
+
+                elif atype == "seagull":
+                    x = _rng.uniform(20, cw - 80)
+                    y = _rng.uniform(20, ch * 0.3)
+                    wing1 = canvas.create_line(x, y, x - 8, y - 4, fill="white", width=1)
+                    wing2 = canvas.create_line(x, y, x + 8, y - 4, fill="white", width=1)
+                    self._scene_items.append({
+                        "type": "seagull",
+                        "ids": [wing1, wing2],
+                        "x": x, "y": y,
+                        "vx": _rng.uniform(0.5, 1.2),
+                        "phase": _rng.uniform(0, 6.28),
+                        "cw": cw, "ch": ch,
+                    })
+
+                elif atype == "neon_flash":
+                    x = _rng.uniform(cw * 0.15, cw * 0.85)
+                    y = _rng.uniform(ch * 0.15, ch * 0.55)
+                    color = _rng.choice(["#ff0066", "#00ffcc", "#ff6600",
+                                          "#cc00ff", "#00ff66", "#ffcc00"])
+                    neon = canvas.create_rectangle(x, y, x + _rng.uniform(12, 25),
+                                                    y + _rng.uniform(3, 6),
+                                                    fill=color, outline="", state="hidden")
+                    self._scene_items.append({
+                        "type": "neon_flash", "id": neon,
+                        "phase": _rng.uniform(0, 200),
+                        "on_time": _rng.uniform(15, 40),
+                        "off_time": _rng.uniform(30, 80),
+                        "color": color,
+                    })
+
+    def _tick_scene_anims(self, frame):
+        canvas = self.track_canvas
+        for item in self._scene_items:
+            t = item["type"]
+
+            if t == "blossom":
+                item["x"] += item["vx"] + math.sin(item["sway"] + frame * 0.03) * 0.4
+                item["y"] += item["vy"]
+                if item["y"] > item["ch"] + 10:
+                    item["y"] = -10
+                    item["x"] = self._rng.uniform(20, item["cw"] - 20)
+                s = item["size"]
+                wobble = math.sin(item["sway"] + frame * 0.05) * 2
+                canvas.coords(item["id"], item["x"] + wobble, item["y"],
+                              item["x"] + s + wobble, item["y"] + s)
+
+            elif t == "kangaroo":
+                item["phase"] += item["speed"]
+                hop = abs(math.sin(item["phase"])) * item["hop_h"]
+                drift = math.sin(item["phase"] * 0.3) * 25
+                dx = drift * item["direction"]
+                bx, by = item["base_x"] + dx, item["base_y"] - hop
+                offsets = [(bx - 8, by - 5, bx + 8, by + 5),
+                           (bx + 5, by - 10, bx + 13, by - 2),
+                           (bx + 7, by - 14, bx + 10, by - 9),
+                           (bx + 10, by - 14, bx + 13, by - 9)]
+                for idx, coords in enumerate(offsets):
+                    canvas.coords(item["ids"][idx], *coords)
+                canvas.coords(item["ids"][4], bx - 8, by, bx - 18, by - 6 + hop * 0.3)
+
+            elif t == "firework":
+                cycle = (frame + item["phase"]) % item["period"]
+                burst_dur = 40
+                if cycle < burst_dur:
+                    t_frac = cycle / burst_dur
+                    radius = t_frac * 30
+                    alpha_state = "normal" if t_frac < 0.8 else "hidden"
+                    for spark in item["sparks"]:
+                        sx = item["cx"] + math.cos(spark["angle"]) * radius
+                        sy = item["cy"] + math.sin(spark["angle"]) * radius
+                        sr = 3 * (1 - t_frac * 0.5)
+                        canvas.coords(spark["id"], sx - sr, sy - sr, sx + sr, sy + sr)
+                        canvas.itemconfigure(spark["id"], state=alpha_state)
+                else:
+                    for spark in item["sparks"]:
+                        canvas.itemconfigure(spark["id"], state="hidden")
+
+            elif t == "star":
+                brightness = 0.3 + 0.7 * abs(math.sin(item["phase"] + frame * item["speed"]))
+                r = item["base_size"] * (0.5 + brightness * 0.5)
+                gray = int(150 + brightness * 105)
+                color = f"#{gray:02x}{gray:02x}{min(255, gray + 20):02x}"
+                canvas.coords(item["id"], item["x"] - r, item["y"] - r,
+                              item["x"] + r, item["y"] + r)
+                canvas.itemconfigure(item["id"], fill=color)
+
+            elif t == "rain":
+                item["y"] += item["speed"]
+                item["x"] -= item["speed"] * 0.3
+                if item["y"] > item["ch"]:
+                    item["y"] = -10
+                    item["x"] = self._rng.uniform(0, item["cw"])
+                canvas.coords(item["id"], item["x"], item["y"],
+                              item["x"] - 1, item["y"] + 8)
+
+            elif t == "sparkle_water":
+                brightness = abs(math.sin(item["phase"] + frame * item["speed"]))
+                r = 1 + brightness * 2
+                gray = int(100 + brightness * 155)
+                color = f"#{max(80,gray-30):02x}{gray:02x}{min(255,gray+30):02x}"
+                canvas.coords(item["id"], item["x"] - r, item["y"] - r,
+                              item["x"] + r, item["y"] + r)
+                canvas.itemconfigure(item["id"], fill=color)
+
+            elif t == "seagull":
+                item["x"] += item["vx"]
+                item["phase"] += 0.08
+                wing_y = math.sin(item["phase"]) * 5
+                if item["x"] > item["cw"] + 20:
+                    item["x"] = -20
+                x, y = item["x"], item["y"]
+                canvas.coords(item["ids"][0], x, y, x - 8, y - 4 + wing_y)
+                canvas.coords(item["ids"][1], x, y, x + 8, y - 4 + wing_y)
+
+            elif t == "neon_flash":
+                cycle = (frame + item["phase"]) % (item["on_time"] + item["off_time"])
+                if cycle < item["on_time"]:
+                    canvas.itemconfigure(item["id"], state="normal")
+                else:
+                    canvas.itemconfigure(item["id"], state="hidden")
 
     # ── Smooth animation loop ──
 
@@ -1336,15 +2027,15 @@ class ApexAI:
             return
 
         canvas = self.track_canvas
-        preds = self._viz_preds
         frame = self._anim_frame
         hw = self._anim_hw
         num = self._anim_num
+        n = self._anim_count
 
         spread_duration = 90.0
         orbit_speed = 0.35
 
-        for i in range(len(preds)):
+        for i in range(n):
             target = self._anim_targets[i]
 
             if frame < spread_duration:
@@ -1352,8 +2043,7 @@ class ApexAI:
                 ease = 1.0 - (1.0 - t) ** 3
                 pos = target * ease
             else:
-                offset = (frame - spread_duration) * orbit_speed
-                pos = target + offset
+                pos = target + (frame - spread_duration) * orbit_speed
 
             pos = pos % num
             self._anim_pos[i] = pos
@@ -1365,7 +2055,7 @@ class ApexAI:
             canvas.coords(self._dot_txt_ids[i], px, py)
 
             trails = self._trail_ids[i]
-            if frame >= 8:
+            if trails and frame >= 8:
                 for t_idx in range(0, len(trails), 2):
                     tr_r = trails[t_idx]
                     tr_id = trails[t_idx + 1]
@@ -1404,8 +2094,12 @@ class ApexAI:
                 canvas.coords(ids["name"], lx + 2, ly - 7)
                 canvas.coords(ids["prob"], lx + 2, ly + 8)
 
+        # Scene animations: update every 2nd frame for performance
+        if frame % 2 == 0 and hasattr(self, "_scene_items") and self._scene_items:
+            self._tick_scene_anims(frame)
+
         self._anim_frame += 1
-        self.root.after(33, self._anim_tick)
+        self.root.after(40, self._anim_tick)
 
     def run(self):
         self.root.mainloop()

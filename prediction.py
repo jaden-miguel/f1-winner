@@ -20,7 +20,7 @@ from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier
 
 # Suppress fastf1 verbose logging
 logging.getLogger("fastf1").setLevel(logging.WARNING)
@@ -124,7 +124,59 @@ def load_data(years=(2022, 2023, 2024, 2025), progress_callback=None):
     df["DriverPointsBefore"] = df.groupby("DriverNumber")["Points"].cumsum() - df["Points"]
     df["TeamPointsBefore"] = df.groupby("TeamName")["Points"].cumsum() - df["Points"]
     df = df.dropna(subset=["GridPosition", "DriverNumber", "Position"])
+    df = _add_rolling_features(df)
     df.to_csv(csv_path, index=False)
+    return df
+
+
+def _add_rolling_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute rolling performance features per driver for improved prediction."""
+    df = df.sort_values(["Year", "Round"]).copy()
+
+    # Per-driver rolling stats (using expanding window for cumulative history)
+    grp = df.groupby("Abbreviation")
+
+    # Recent average finish position (last 5 races) — lower is better
+    df["RecentAvgPos"] = grp["Position"].transform(
+        lambda s: s.shift(1).rolling(5, min_periods=1).mean()
+    ).fillna(10.0)
+
+    # Recent win rate (last 10 races)
+    df["RecentWinRate"] = grp["Position"].transform(
+        lambda s: (s.shift(1) == 1).astype(float).rolling(10, min_periods=1).mean()
+    ).fillna(0.0)
+
+    # Recent podium rate (last 10 races, position <= 3)
+    df["RecentPodiumRate"] = grp["Position"].transform(
+        lambda s: (s.shift(1) <= 3).astype(float).rolling(10, min_periods=1).mean()
+    ).fillna(0.0)
+
+    # Driver experience: cumulative race count
+    df["DriverExperience"] = grp.cumcount()
+
+    # Head-to-head vs teammate: fraction of races beating teammate
+    h2h = []
+    for _, race_grp in df.groupby(["Year", "Round"]):
+        for team, team_grp in race_grp.groupby("TeamName"):
+            if len(team_grp) == 2:
+                rows = team_grp.sort_values("Position")
+                h2h.append({"idx": rows.index[0], "beat_tm": 1.0})
+                h2h.append({"idx": rows.index[1], "beat_tm": 0.0})
+            else:
+                for idx in team_grp.index:
+                    h2h.append({"idx": idx, "beat_tm": 0.5})
+    h2h_df = pd.DataFrame(h2h).set_index("idx")
+    df["_beat_tm"] = h2h_df["beat_tm"]
+    df["HeadToHead"] = df.groupby("Abbreviation")["_beat_tm"].transform(
+        lambda s: s.shift(1).expanding().mean()
+    ).fillna(0.5)
+    df.drop(columns=["_beat_tm"], inplace=True)
+
+    # Team recent form: team's avg finish position over last 10 races
+    df["TeamRecentForm"] = df.groupby("TeamName")["Position"].transform(
+        lambda s: s.shift(1).rolling(10, min_periods=1).mean()
+    ).fillna(10.0)
+
     return df
 
 
@@ -171,12 +223,52 @@ def get_lineup_for_next_round(df: pd.DataFrame, next_year: int, features: list) 
         lineup["TeamPointsBefore"] = lineup["TeamName"].map(team_totals).fillna(0)
     lineup["GridPosition"] = 0
 
+    # Compute rolling features from the latest historical data per driver
+    latest = df.sort_values(["Year", "Round"])
+    for abbr in lineup["Abbreviation"].unique():
+        drv = latest[latest["Abbreviation"] == abbr]
+        if drv.empty:
+            continue
+        last_rows = drv.tail(10)
+        last5 = drv.tail(5)
+        idx = lineup["Abbreviation"] == abbr
+        lineup.loc[idx, "RecentAvgPos"] = last5["Position"].mean()
+        lineup.loc[idx, "RecentWinRate"] = (last_rows["Position"] == 1).mean()
+        lineup.loc[idx, "RecentPodiumRate"] = (last_rows["Position"] <= 3).mean()
+        lineup.loc[idx, "DriverExperience"] = float(len(drv))
+        lineup.loc[idx, "HeadToHead"] = drv["HeadToHead"].iloc[-1] if "HeadToHead" in drv.columns else 0.5
+
+    for team in lineup["TeamName"].unique():
+        mapped_team = TEAM_LINEAGE.get(team, team)
+        team_data = latest[latest["TeamName"].isin(
+            [t for t, v in TEAM_LINEAGE.items() if v == mapped_team] + [mapped_team, team]
+        )]
+        if not team_data.empty:
+            lineup.loc[lineup["TeamName"] == team, "TeamRecentForm"] = team_data.tail(20)["Position"].mean()
+
+    for col in ["RecentAvgPos", "RecentWinRate", "RecentPodiumRate",
+                "DriverExperience", "HeadToHead", "TeamRecentForm"]:
+        if col not in lineup.columns:
+            lineup[col] = 10.0 if "Pos" in col or "Form" in col else 0.0 if "Rate" in col else 0.5
+        lineup[col] = lineup[col].fillna(
+            10.0 if "Pos" in col or "Form" in col else 0.0 if "Rate" in col else 0.5
+        )
+
     return lineup
+
+
+FEATURES = [
+    "Abbreviation", "TeamName",
+    "GridPosition", "DriverNumber",
+    "DriverPointsBefore", "TeamPointsBefore",
+    "RecentAvgPos", "RecentWinRate", "RecentPodiumRate",
+    "DriverExperience", "HeadToHead", "TeamRecentForm",
+]
 
 
 def build_model():
     categorical = ["Abbreviation", "TeamName"]
-    numeric = ["GridPosition", "DriverNumber", "DriverPointsBefore", "TeamPointsBefore"]
+    numeric = [f for f in FEATURES if f not in categorical]
 
     pre = ColumnTransformer(
         [
@@ -188,24 +280,25 @@ def build_model():
     pipe = Pipeline(
         [
             ("preprocess", pre),
-            ("classifier", RandomForestClassifier(random_state=42)),
+            ("classifier", GradientBoostingClassifier(random_state=42)),
         ]
     )
 
     param_dist = {
-        "classifier__n_estimators": [150, 250],
-        "classifier__max_depth": [10, 20],
-        "classifier__min_samples_split": [2, 5],
-        "classifier__min_samples_leaf": [1, 2],
+        "classifier__n_estimators": [200, 350, 500],
+        "classifier__max_depth": [4, 6, 8],
+        "classifier__learning_rate": [0.05, 0.1, 0.15],
+        "classifier__min_samples_split": [5, 10],
+        "classifier__subsample": [0.8, 0.9, 1.0],
     }
 
     search = RandomizedSearchCV(
         pipe,
         param_distributions=param_dist,
-        n_iter=4,
-        cv=3,
-        n_jobs=1,
-        scoring="accuracy",
+        n_iter=12,
+        cv=5,
+        n_jobs=-1,
+        scoring="f1",
         random_state=42,
     )
 
@@ -239,14 +332,7 @@ def run_predictions(progress_callback=None, target_year=2026):
         last_round = int(df[df["Year"] == last_year]["Round"].max())
         fingerprint = _data_fingerprint(df)
 
-        features = [
-            "Abbreviation",
-            "TeamName",
-            "GridPosition",
-            "DriverNumber",
-            "DriverPointsBefore",
-            "TeamPointsBefore",
-        ]
+        features = list(FEATURES)
 
         train_df = df[~((df["Year"] == last_year) & (df["Round"] == last_round))]
         test_df = df[(df["Year"] == last_year) & (df["Round"] == last_round)]
@@ -413,6 +499,12 @@ def run_predictions(progress_callback=None, target_year=2026):
             "_base_lineup": lineup[["DriverNumber", "Abbreviation", "TeamName"]].to_dict("records"),
             "_base_driver_pts": lineup.set_index("Abbreviation")["DriverPointsBefore"].to_dict(),
             "_base_team_pts": lineup.drop_duplicates("TeamName").set_index("TeamName")["TeamPointsBefore"].to_dict(),
+            "_extra_features": {
+                col: lineup.set_index("Abbreviation")[col].to_dict()
+                for col in ["RecentAvgPos", "RecentWinRate", "RecentPodiumRate",
+                            "DriverExperience", "HeadToHead", "TeamRecentForm"]
+                if col in lineup.columns
+            },
         }
     except Exception as e:
         import traceback
@@ -422,12 +514,24 @@ def run_predictions(progress_callback=None, target_year=2026):
 F1_POINTS = {1: 25, 2: 18, 3: 15, 4: 12, 5: 10, 6: 8, 7: 6, 8: 4, 9: 2, 10: 1}
 
 
-def predict_with_standings(model, features, base_lineup, driver_pts, team_pts):
+def predict_with_standings(model, features, base_lineup, driver_pts, team_pts,
+                           extra_features=None):
     """Re-run predictions with updated championship standings."""
     lineup = pd.DataFrame(base_lineup)
     lineup["DriverPointsBefore"] = lineup["Abbreviation"].map(driver_pts).fillna(0)
     lineup["TeamPointsBefore"] = lineup["TeamName"].map(team_pts).fillna(0)
     lineup["GridPosition"] = 0
+
+    if extra_features:
+        for col, mapping in extra_features.items():
+            if col not in lineup.columns:
+                lineup[col] = lineup["Abbreviation"].map(mapping).fillna(
+                    10.0 if "Pos" in col or "Form" in col else 0.0 if "Rate" in col else 0.5
+                )
+
+    for col in features:
+        if col not in lineup.columns:
+            lineup[col] = 10.0 if "Pos" in col or "Form" in col else 0.0 if "Rate" in col else 0.5
 
     probs = model.predict_proba(lineup[features])[:, 1]
     lineup["WinProbability"] = probs
@@ -459,14 +563,7 @@ def run_predictions_all_races(progress_callback=None):
             return {"error": "No race data available. Ensure data.csv exists or check your internet connection."}
 
         df["Winner"] = (df["Position"] == 1).astype(int)
-        features = [
-            "Abbreviation",
-            "TeamName",
-            "GridPosition",
-            "DriverNumber",
-            "DriverPointsBefore",
-            "TeamPointsBefore",
-        ]
+        features = list(FEATURES)
 
         races = df.groupby(["Year", "Round"])
         results = []
