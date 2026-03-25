@@ -1,12 +1,14 @@
 # ApexAI: F1 Winner Predictor
 
 This project downloads Formula 1 race results with the
-[FastF1](https://github.com/theOehrly/Fast-F1) library and trains a random
-forest model to estimate each driver's chance of winning the next race. The
-training data includes cumulative driver and team points before each round.
-`RandomizedSearchCV` selects the best hyperparameters for the forest so the
-predictions are as accurate as possible. Includes a race-themed GUI and supports
-the 2026 driver lineup.
+[FastF1](https://github.com/theOehrly/Fast-F1) library and trains a Gradient
+Boosting model to estimate each driver's chance of winning the next race. The
+model uses rolling performance features — recent win rate, podium rate, average
+finish position, head-to-head vs teammate, driver experience, and team form — on
+top of cumulative championship points. `RandomizedSearchCV` tunes
+hyperparameters over 12 iterations with 5-fold CV. Includes a race-themed GUI
+with track visualization, circuit-specific animations, team radio playback, and
+supports the 2026 driver lineup.
 
 ## Setup
 
